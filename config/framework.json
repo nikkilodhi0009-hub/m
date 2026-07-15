@@ -1,0 +1,8 @@
+{
+  "mode": "observe",
+  "debug": true,
+  "targetApi": 29,
+  "rootedDevice": true,
+  "magiskCompatible": true,
+  "zygiskReady": false
+}
