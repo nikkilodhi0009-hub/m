@@ -1,0 +1,8 @@
+{
+  "userLifecycle": true,
+  "packageMonitoring": true,
+  "binderMonitoring": false,
+  "monitorUserStart": true,
+  "monitorUserStop": true,
+  "monitorRunningUsers": true
+}
