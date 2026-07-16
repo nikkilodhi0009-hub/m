@@ -21,6 +21,9 @@ object HookEngine {
     private val logWriter = LifecycleLogWriter("/data/local/tmp/framework.log")
     private lateinit var baseDir: File
     private val registrations = mutableListOf<HookRegistration>()
+    private val registry = HookRegistry()
+    private val lifecycleManager = HookLifecycleManager()
+    private val diagnostics = HookDiagnostics()
     private val installedTargets = mutableSetOf<String>()
     private var policyMode = HookMode.OBSERVE
     private val backend: HookBackend = RuntimeHookBackend()
@@ -30,7 +33,11 @@ object HookEngine {
         baseDir.mkdirs()
         ConfigLoader.loadDefaultConfigs(baseDir)
         logger.info("Hook engine initialized", mapOf("baseDir" to baseDir.absolutePath))
-        installFrameworkHooks()
+        try {
+            installFrameworkHooks()
+        } catch (throwable: Throwable) {
+            logger.info("Hook initialization failed", mapOf("error" to (throwable.message ?: "unknown")))
+        }
     }
 
     fun registerJavaHook(className: String, methodName: String, callback: HookCallback): HookRegistration {
@@ -41,6 +48,9 @@ object HookEngine {
             callback = callback
         )
         registrations.add(registration)
+        registry.add(registration)
+        lifecycleManager.register(registration)
+        diagnostics.record(registration, "registered")
         logger.info(
             "Registered Java hook",
             mapOf("class" to className, "method" to methodName)
@@ -56,6 +66,9 @@ object HookEngine {
             constructorHook = true
         )
         registrations.add(registration)
+        registry.add(registration)
+        lifecycleManager.register(registration)
+        diagnostics.record(registration, "registered constructor hook")
         logger.info("Registered constructor hook", mapOf("class" to className))
         return registration
     }
@@ -69,12 +82,19 @@ object HookEngine {
             replacementHook = true
         )
         registrations.add(registration)
+        registry.add(registration)
+        lifecycleManager.register(registration)
+        diagnostics.record(registration, "registered replacement hook")
         logger.info("Registered replacement hook", mapOf("class" to className, "method" to methodName))
         return registration
     }
 
     fun removeHook(registration: HookRegistration) {
         registrations.remove(registration)
+        registry.remove(registration)
+        lifecycleManager.disable(registration)
+        lifecycleManager.remove(registration)
+        diagnostics.record(registration, "removed")
     }
 
     fun installFrameworkHooks() {
@@ -144,6 +164,18 @@ object HookEngine {
 
                     val result = backend.installMethodHook(registration)
                     val verify = backend.verifyHook(registration)
+                    if (result.installed && verify.installed) {
+                        lifecycleManager.enable(registration)
+                        lifecycleManager.markInstalled(registration)
+                        diagnostics.record(registration, "installed and verified")
+                    } else {
+                        lifecycleManager.disable(registration)
+                        lifecycleManager.markFailed(registration, verify.reason)
+                        if (result.installed) {
+                            lifecycleManager.rollback(registration)
+                        }
+                        diagnostics.record(registration, "installation failed: ${verify.reason}", "ERROR")
+                    }
                     installedTargets.add(registrationId)
                     logger.info(
                         "Hook backend report",
@@ -160,6 +192,22 @@ object HookEngine {
         }
     }
 
+    fun refreshConfiguration(baseDir: File) {
+        this.baseDir = baseDir
+        ConfigLoader.loadDefaultConfigs(baseDir)
+        logger.info("Hook configuration reloaded", mapOf("baseDir" to baseDir.absolutePath))
+    }
+
+    fun healthCheck(): Map<String, Any> {
+        val active = lifecycleManager.snapshot().count { it.state == HookState.INSTALLED }
+        return mapOf(
+            "activeHooks" to active,
+            "registeredHooks" to registrations.size,
+            "diagnosticCount" to diagnostics.snapshot().size,
+            "backend" to backend.name()
+        )
+    }
+
     fun invokeHookedMethod(target: Any?, methodName: String, args: Array<Any?> = emptyArray()): Any? {
         if (target == null) {
             return null
@@ -173,7 +221,7 @@ object HookEngine {
                 it.className == target.javaClass.name ||
                     it.className == target.javaClass.canonicalName ||
                     it.className.endsWith(".${target.javaClass.simpleName}")
-                )
+                ) && lifecycleManager.getEntry(it)?.state == HookState.INSTALLED
         }
 
         matchingRegistrations.forEach { registration ->
@@ -201,7 +249,7 @@ object HookEngine {
             it.methodName == methodName && (
                 it.className == className ||
                     it.className.endsWith(".$className")
-                )
+                ) && lifecycleManager.getEntry(it)?.state == HookState.INSTALLED
         }
 
         matchingRegistrations.forEach { registration ->
@@ -212,9 +260,14 @@ object HookEngine {
     }
 
     fun invokeConstructorHook(className: String, args: Array<Any?> = emptyArray()): Any? {
-        val targetClass = ReflectionHelper.findClass(className) ?: return null
-        val constructor = ReflectionHelper.findConstructor(targetClass) ?: return null
-        return constructor.newInstance(*args)
+        return try {
+            val targetClass = ReflectionHelper.findClass(className) ?: return null
+            val constructor = ReflectionHelper.findConstructor(targetClass, args.mapNotNull { it?.javaClass }) ?: return null
+            constructor.newInstance(*args)
+        } catch (throwable: Throwable) {
+            logger.info("Constructor hook failed", mapOf("class" to className, "error" to (throwable.message ?: "unknown")))
+            null
+        }
     }
 
     fun getMonitor(): UserLifecycleMonitor = monitor

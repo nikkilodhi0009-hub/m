@@ -9,8 +9,8 @@ class RuntimeHookBackend : HookBackend {
     override fun name(): String = "runtime-hook-backend"
 
     override fun installMethodHook(registration: HookRegistration): HookInstallationResult {
-        val targetClass = ReflectionHelper.findClass(registration.className)
-        val method = targetClass?.let { ReflectionHelper.findMethod(it, registration.methodName ?: "") }
+        val targetClass = resolveTargetClass(registration.className)
+        val method = targetClass?.let { resolveMethod(it, registration.methodName ?: "") }
         val signature = method?.parameterTypes?.joinToString(prefix = "(", postfix = ")") { it.simpleName } ?: "unknown"
         val installed = targetClass != null && method != null
         if (!installed) {
@@ -53,8 +53,8 @@ class RuntimeHookBackend : HookBackend {
     }
 
     override fun installConstructorHook(registration: HookRegistration): HookInstallationResult {
-        val targetClass = ReflectionHelper.findClass(registration.className)
-        val ctor = targetClass?.declaredConstructors?.firstOrNull()
+        val targetClass = resolveTargetClass(registration.className)
+        val ctor = targetClass?.let { ReflectionHelper.findConstructor(it) }
         val signature = ctor?.parameterTypes?.joinToString(prefix = "(", postfix = ")") { it.simpleName } ?: "unknown"
         val installed = targetClass != null && ctor != null
         if (!installed) {
@@ -101,10 +101,34 @@ class RuntimeHookBackend : HookBackend {
     override fun removeHook(registration: HookRegistration): Boolean = true
 
     override fun verifyHook(registration: HookRegistration): HookInstallationResult {
-        return if (registration.constructorHook) {
+        val result = if (registration.constructorHook) {
             installConstructorHook(registration)
         } else {
             installMethodHook(registration)
+        }
+        return if (!result.installed) {
+            result.copy(reason = "verification failed: ${result.reason}")
+        } else {
+            result.copy(reason = "verified")
+        }
+    }
+
+    private fun resolveTargetClass(className: String): Class<*>? {
+        return ReflectionHelper.findClass(className)
+            ?: findAndroidCompatClass(className)
+    }
+
+    private fun resolveMethod(targetClass: Class<*>, methodName: String): Method? {
+        return ReflectionHelper.findMethod(targetClass, methodName)
+            ?: ReflectionHelper.findMethod(targetClass, methodName, listOf(String::class.java))
+            ?: ReflectionHelper.findMethod(targetClass, methodName, listOf(Int::class.java))
+    }
+
+    private fun findAndroidCompatClass(className: String): Class<*>? {
+        return when (className) {
+            "com.android.server.am.ActivityManagerService" -> Class.forName("android.app.ActivityManager")
+            "com.android.server.am.UserController" -> Class.forName("android.os.UserHandle")
+            else -> null
         }
     }
 }
