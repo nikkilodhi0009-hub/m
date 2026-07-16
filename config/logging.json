@@ -1,0 +1,10 @@
+{
+  "enableStackTrace": true,
+  "logToFile": "/data/local/tmp/user_stop.log",
+  "includeCallerUid": true,
+  "includeCallerPid": true,
+  "includePackageName": true,
+  "includeProcessName": true,
+  "includeBinderCaller": true,
+  "debugMode": true
+}
