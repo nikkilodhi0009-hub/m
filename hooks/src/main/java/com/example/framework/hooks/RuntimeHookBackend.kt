@@ -3,6 +3,9 @@ package com.example.framework.hooks
 import com.example.framework.common.Logger
 import java.lang.reflect.Method
 
+/**
+ * A lightweight backend that reports whether a hook target can be resolved.
+ */
 class RuntimeHookBackend : HookBackend {
     private val logger = Logger("RuntimeHookBackend")
 
@@ -15,7 +18,7 @@ class RuntimeHookBackend : HookBackend {
         val installed = targetClass != null && method != null
         if (!installed) {
             logger.info(
-                "❌ Hook installation failed",
+                "Hook installation failed",
                 mapOf(
                     "class" to registration.className,
                     "method" to (registration.methodName ?: "<ctor>"),
@@ -33,7 +36,7 @@ class RuntimeHookBackend : HookBackend {
         }
 
         logger.info(
-            "✔ Hook installed",
+            "Hook installed",
             mapOf(
                 "class" to registration.className,
                 "method" to (registration.methodName ?: "<ctor>"),
@@ -59,7 +62,7 @@ class RuntimeHookBackend : HookBackend {
         val installed = targetClass != null && ctor != null
         if (!installed) {
             logger.info(
-                "❌ Hook installation failed",
+                "Hook installation failed",
                 mapOf(
                     "class" to registration.className,
                     "method" to "<ctor>",
@@ -76,7 +79,7 @@ class RuntimeHookBackend : HookBackend {
             )
         }
         logger.info(
-            "✔ Hook installed",
+            "Hook installed",
             mapOf(
                 "class" to registration.className,
                 "method" to "<ctor>",
@@ -126,8 +129,8 @@ class RuntimeHookBackend : HookBackend {
 
     private fun findAndroidCompatClass(className: String): Class<*>? {
         return when (className) {
-            "com.android.server.am.ActivityManagerService" -> Class.forName("android.app.ActivityManager")
-            "com.android.server.am.UserController" -> Class.forName("android.os.UserHandle")
+            "com.android.server.am.ActivityManagerService" -> runCatching { Class.forName("android.app.ActivityManager") }.getOrNull()
+            "com.android.server.am.UserController" -> runCatching { Class.forName("android.os.UserHandle") }.getOrNull()
             else -> null
         }
     }

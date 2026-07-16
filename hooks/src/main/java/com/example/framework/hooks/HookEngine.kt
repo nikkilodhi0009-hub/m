@@ -15,15 +15,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * Coordinates hook registration, installation, and lifecycle diagnostics.
+ */
 object HookEngine {
     private val logger = Logger("HookEngine")
     private val monitor = UserLifecycleMonitor()
     private val logWriter = LifecycleLogWriter("/data/local/tmp/framework.log")
     private lateinit var baseDir: File
-    private val registrations = mutableListOf<HookRegistration>()
-    private val registry = HookRegistry()
-    private val lifecycleManager = HookLifecycleManager()
-    private val diagnostics = HookDiagnostics()
+    private val registrationStore = HookRegistrationStore()
     private val installedTargets = mutableSetOf<String>()
     private var policyMode = HookMode.OBSERVE
     private val backend: HookBackend = RuntimeHookBackend()
@@ -47,10 +47,7 @@ object HookEngine {
             methodName = methodName,
             callback = callback
         )
-        registrations.add(registration)
-        registry.add(registration)
-        lifecycleManager.register(registration)
-        diagnostics.record(registration, "registered")
+        registrationStore.register(registration)
         logger.info(
             "Registered Java hook",
             mapOf("class" to className, "method" to methodName)
@@ -65,10 +62,7 @@ object HookEngine {
             callback = callback,
             constructorHook = true
         )
-        registrations.add(registration)
-        registry.add(registration)
-        lifecycleManager.register(registration)
-        diagnostics.record(registration, "registered constructor hook")
+        registrationStore.register(registration)
         logger.info("Registered constructor hook", mapOf("class" to className))
         return registration
     }
@@ -81,20 +75,13 @@ object HookEngine {
             callback = callback,
             replacementHook = true
         )
-        registrations.add(registration)
-        registry.add(registration)
-        lifecycleManager.register(registration)
-        diagnostics.record(registration, "registered replacement hook")
+        registrationStore.register(registration)
         logger.info("Registered replacement hook", mapOf("class" to className, "method" to methodName))
         return registration
     }
 
     fun removeHook(registration: HookRegistration) {
-        registrations.remove(registration)
-        registry.remove(registration)
-        lifecycleManager.disable(registration)
-        lifecycleManager.remove(registration)
-        diagnostics.record(registration, "removed")
+        registrationStore.remove(registration)
     }
 
     fun installFrameworkHooks() {
@@ -165,16 +152,16 @@ object HookEngine {
                     val result = backend.installMethodHook(registration)
                     val verify = backend.verifyHook(registration)
                     if (result.installed && verify.installed) {
-                        lifecycleManager.enable(registration)
-                        lifecycleManager.markInstalled(registration)
-                        diagnostics.record(registration, "installed and verified")
+                        registrationStore.getLifecycleManager().enable(registration)
+                        registrationStore.getLifecycleManager().markInstalled(registration)
+                        registrationStore.getDiagnostics().record(registration, "installed and verified")
                     } else {
-                        lifecycleManager.disable(registration)
-                        lifecycleManager.markFailed(registration, verify.reason)
+                        registrationStore.getLifecycleManager().disable(registration)
+                        registrationStore.getLifecycleManager().markFailed(registration, verify.reason)
                         if (result.installed) {
-                            lifecycleManager.rollback(registration)
+                            registrationStore.getLifecycleManager().rollback(registration)
                         }
-                        diagnostics.record(registration, "installation failed: ${verify.reason}", "ERROR")
+                        registrationStore.getDiagnostics().record(registration, "installation failed: ${verify.reason}", "ERROR")
                     }
                     installedTargets.add(registrationId)
                     logger.info(
@@ -199,11 +186,12 @@ object HookEngine {
     }
 
     fun healthCheck(): Map<String, Any> {
+        val lifecycleManager = registrationStore.getLifecycleManager()
         val active = lifecycleManager.snapshot().count { it.state == HookState.INSTALLED }
         return mapOf(
             "activeHooks" to active,
-            "registeredHooks" to registrations.size,
-            "diagnosticCount" to diagnostics.snapshot().size,
+            "registeredHooks" to registrationStore.size(),
+            "diagnosticCount" to registrationStore.getDiagnostics().snapshot().size,
             "backend" to backend.name()
         )
     }
@@ -216,12 +204,12 @@ object HookEngine {
         val method = ReflectionHelper.findMethod(target.javaClass, methodName)
             ?: return null
 
-        val matchingRegistrations = registrations.filter {
+        val matchingRegistrations = registrationStore.snapshot().filter {
             it.methodName == methodName && (
                 it.className == target.javaClass.name ||
                     it.className == target.javaClass.canonicalName ||
                     it.className.endsWith(".${target.javaClass.simpleName}")
-                ) && lifecycleManager.getEntry(it)?.state == HookState.INSTALLED
+                ) && registrationStore.getLifecycleManager().getEntry(it)?.state == HookState.INSTALLED
         }
 
         matchingRegistrations.forEach { registration ->
@@ -245,11 +233,11 @@ object HookEngine {
     }
 
     fun dispatchRuntimeHook(className: String, methodName: String, args: Array<Any?> = emptyArray(), result: Any? = null, throwable: Throwable? = null) {
-        val matchingRegistrations = registrations.filter {
+        val matchingRegistrations = registrationStore.snapshot().filter {
             it.methodName == methodName && (
                 it.className == className ||
                     it.className.endsWith(".$className")
-                ) && lifecycleManager.getEntry(it)?.state == HookState.INSTALLED
+                ) && registrationStore.getLifecycleManager().getEntry(it)?.state == HookState.INSTALLED
         }
 
         matchingRegistrations.forEach { registration ->
